@@ -1,115 +1,79 @@
-# Fishing-Game---Engineering-Project-
-Final Project for Cornerstone of Engineering at Northeastern University 
+# Pirate Fishing Game
 
+A spinning-disk fishing game built on a Raspberry Pi Pico for the Cornerstone of Engineering 2 final project at Northeastern University (May 2026). Players use magnetic fishing rods to catch fish and gold off a rotating disk and drop them into a collection box, where an IR beam counts each catch and an LCD shows the live score and a 2-minute countdown.
 
-# Breakbeam Counter + Countdown Timer + Servo
-# --------------------------------------------
-# Hardware:
-#   LCD SDA         → GP0  (pin 1)
-#   LCD SCL         → GP1  (pin 2)
-#   LCD VCC         → 5V (VBUS pin 40 or battery)
-#   LCD GND         → shared GND
-#   IR Transmitter  → GP14 (pin 19)  |  VCC → VBUS 5V (pin 40)
-#   IR Receiver     → GP15 (pin 20)  |  VCC → 3V3 (pin 36)
-#   Servo signal    → GP16 (pin 21)  |  VCC → 5V (VBUS or battery)
-#   All GND         → shared GND rail
+We built it with a 4-person team and ran it at an expo at the Boston Children's Museum, where 76 children played 90 rounds.
 
-from machine import Pin, I2C, PWM, Timer
-from pico_i2c_lcd import I2cLcd
-import utime
+![Finished game at the museum expo](images/finished-game.jpg)
 
-# ── CONFIGURATION ──────────────────────────────────────────
-I2C_SDA_PIN     = 0
-I2C_SCL_PIN     = 1
-I2C_FREQ        = 100_000
-LCD_I2C_ADDR    = 0x27
-LCD_COLS        = 16
-LCD_ROWS        = 2
-TRANSMITTER_PIN = 14
-RECEIVER_PIN    = 15
-SERVO_PIN       = 16
-COUNTDOWN_SECS  = 120
-MEDIUM_SPEED    = 6800
+## Design goals
 
-# ── SERVO ───────────────────────────────────────────────────
-servo_pwm = PWM(Pin(SERVO_PIN))
-servo_pwm.freq(50)
+- Audience: museum visitors ages 4 to 8+
+- Needs: safe, engaging, durable, and transportable
+- Constraints: $120 budget, no choking hazards (every part over 35 mm), no sharp edges, latex, or slime
+- Challenge: kids have different abilities, so the game has to be simple but still fun to replay
 
-def servo_start():
-    servo_pwm.duty_u16(MEDIUM_SPEED)
+## Hardware
 
-def servo_stop():
-    servo_pwm.duty_u16(0)
+| Component | Pico pin | Voltage | Purpose |
+|---|---|---|---|
+| LCD SDA | GP0 | 3.3V | I2C data |
+| LCD SCL | GP1 | 3.3V | I2C clock |
+| LCD VCC | VBUS | 5V | Power |
+| IR transmitter | GP14 | 5V | Always on, emits beam |
+| IR receiver | GP15 | 3.3V | LOW = fish detected |
+| Servo signal | GP16 | PWM 50 Hz | Spins the disk |
+| Servo VCC | VBUS | 5V | Power |
+| All GND | shared rail | 0V | Common ground |
 
-# ── IR SENSORS ──────────────────────────────────────────────
-transmitter = Pin(TRANSMITTER_PIN, Pin.OUT)
-transmitter.value(1)  # always on
-receiver = Pin(RECEIVER_PIN, Pin.IN, Pin.PULL_UP)
+- Raspberry Pi Pico running MicroPython
+- 360° continuous-rotation servo (35 kg) to spin the disk
+- IR breakbeam sensor in the collection box
+- 16x2 I2C LCD for score and time
+- Base, top, and collection box laser cut from MDF, designed in AutoCAD
 
-# ── LCD ─────────────────────────────────────────────────────
-utime.sleep(2)  # give LCD time to power up
-i2c = I2C(0, sda=Pin(I2C_SDA_PIN), scl=Pin(I2C_SCL_PIN), freq=I2C_FREQ)
-lcd = I2cLcd(i2c, LCD_I2C_ADDR, LCD_ROWS, LCD_COLS)
+![Breadboard prototype](images/wiring-prototype.jpg)
 
-# ── STATE ───────────────────────────────────────────────────
-count        = 0
-time_left    = COUNTDOWN_SECS
-game_running = True
+![Pico and LCD wiring](images/pico-and-lcd.jpg)
 
-# ── HELPERS ─────────────────────────────────────────────────
-def fmt_time(secs):
-    return "{:02d}:{:02d}".format(secs // 60, secs % 60)
+## How the code works
 
-def update_display():
-    lcd.move_to(0, 0)
-    lcd.putstr("Count:  {:<8}".format(count))
-    lcd.move_to(0, 1)
-    lcd.putstr("Time:   {}   ".format(fmt_time(time_left)))
+`main.py` has two parts that run at the same time:
 
-def game_over():
-    servo_stop()
-    transmitter.value(0)
-    lcd.clear()
-    lcd.move_to(0, 0)
-    lcd.putstr("  Game Over!    ")
-    lcd.move_to(0, 1)
-    lcd.putstr("Score: {:<9}".format(count))
+- **Main loop:** polls the IR receiver every 50 ms. A beam-state flag makes sure each fish only counts once, no matter how long it blocks the beam.
+- **Hardware timer interrupt:** fires every second to update the countdown on the LCD. When time hits zero, it stops the servo, turns off the IR transmitter, and shows the final score.
 
-# ── TIMER CALLBACK (runs every 1 second) ────────────────────
-def tick(t):
-    global time_left, game_running
-    if not game_running:
-        return
-    time_left -= 1
-    update_display()
-    if time_left <= 0:
-        time_left = 0
-        game_running = False
-        countdown_timer.deinit()
-        game_over()
+![Code flowchart](images/code-flowchart.jpg)
 
-# ── STARTUP SEQUENCE ────────────────────────────────────────
-lcd.clear()
-lcd.move_to(0, 0)
-lcd.putstr("  Get Ready...  ")
-utime.sleep(2)
-lcd.clear()
-update_display()
-servo_start()
+## Challenges
 
-countdown_timer = Timer()
-countdown_timer.init(period=1000, mode=Timer.PERIODIC, callback=tick)
+- **Servo wouldn't spin:** the circuit was missing a shared ground rail.
+- **IR sensor double-counted:** one fish could register several hits, so we added an edge-triggered beam-state flag.
+- **Timer and beam detection conflicted:** moving the countdown to an interrupt-driven timer callback let both run without blocking each other.
 
-# ── MAIN LOOP ───────────────────────────────────────────────
-beam_was_clear = True
-while True:
-    if not game_running:
-        break
-    beam_blocked = (receiver.value() == 0)  # LOW = beam broken
-    if beam_blocked and beam_was_clear:
-        count += 1
-        update_display()
-        beam_was_clear = False
-    elif not beam_blocked:
-        beam_was_clear = True
-    utime.sleep_ms(50)
+## Results
+
+| Test | Target | Measured | Result |
+|---|---|---|---|
+| Disk spins continuously | Full 2:00, no stalling | 10/10 trials | Pass |
+| Live score on LCD | Updates within 50 ms | ~50 ms poll rate | Pass |
+| 2:00 countdown | Within ±2 s | ±1 s across 10 trials | Pass |
+| Auto-stop at zero | 100% of rounds | 10/10 rounds | Pass |
+| Budget | Under $120 | $94 total | Pass |
+| No choking hazards | All parts over 35 mm | Smallest piece 38 mm | Pass |
+
+![Player data from the expo](images/player-data.jpg)
+
+## Enclosure design
+
+![AutoCAD layout for laser cutting](images/autocad-layout.jpg)
+
+## Future improvements
+
+- High score display
+- Adjustable disk speed for different ages
+- Sturdier top and tangle-free fishing lines
+
+## Team
+
+Andrew Bertrand, Presthika Vijaykumar, Tiffany Zhang, Jonas Van Kirk
